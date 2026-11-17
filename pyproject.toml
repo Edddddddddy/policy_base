@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "so101-policy-base"
+version = "0.1.0"
+description = "SO-101 policy_base: inference_manager 可拉起的 ACT 策略实例（instance 协议 + ACT 策略集成 + DVC 权重分发）"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pyyaml>=6,<7",
+]
+
+[dependency-groups]
+lint = ["ruff>=0.11,<1"]
+dev = ["pytest>=8,<10", "mypy>=1.15,<2", "types-pyyaml>=6", {include-group = "lint"}]
+
+[project.scripts]
+so101-policy-base = "policy_base.instance.entry:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/policy_base"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src/policy_base"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/smoke"]
+addopts = "-q"
+markers = [
+    "integration: 需要已 source 的 ROS 2 环境/真机，默认不跑",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]

@@ -1,0 +1,73 @@
+# SO-101 policy_base 真机实例配置（ACT 策略；IM/factory_manager 拉起实例时使用）。
+#
+# 定位：inference_manager（IM）按实例协议拉起本仓库入口，实例只做控制面协议 +
+# 每轮拉起一个 ACT 策略子进程（finetune 仓 deploy/run.sh execute），自身不加载 torch。
+#
+# 安全语义（不可放宽）：
+#   * 真机运动需要**三门同时满足**：本文件 policy.allow_platform_execution: true +
+#     实例 CLI --enable-motion + --confirm-real（由 policy_base.policy.backend 校验，
+#     入口无法绕过）；三者缺一 -> build_round_command 拒绝 -> 实例 exit 1；
+#   * 租约（lease）由 factory_manager 持有：实例绝不 acquire/release，只在本进程空闲/轮间
+#     以 4 Hz 发布 <prefix>/joint_command hold 心跳（实测关节位置，不改变目标姿态）；
+#   * 单轮时长上限 policy.max_duration_s: 60s，由 finetune deploy 命令强制执行；
+#   * --dry-run 仅测试用：强制 mock 后端（即使本文件 backend: finetune），绝不真机。
+#
+# 部署前提（真机未验证，见 docs/instance-mode.md §10）：
+#   * 模型权重经 DVC 分发：dvc pull 后得到 models/act-20261117-act-wrist-smoke/
+#     （目录内直接是 config.json / model.safetensors / pre/post processor，无
+#     pretrained_model/ 包装层）；
+#   * finetune 仓 /home/ubuntu/yayyrobotics/finetune 已部署 deploy/run.sh 与
+#     configs/runtime_execute.yaml；SO101_VENV_PYTHON 可用环境变量覆盖；
+#   * arm_app / camera / env_app / DDS 已由站端前置就绪（domain 由 DOMAIN_ID 注入）。
+
+schema: so101.policy_base.instance_config.v1
+
+instance:
+  # IM 注入的命名空间变量名（契约默认 INFERENCE_NAMESPACE，空串 = 无前缀）。
+  namespace_env: INFERENCE_NAMESPACE
+  # warmup：等待首个 <prefix>/joint_states 样本的上限；超时 exit 2（连接/环境问题）。
+  warmup_timeout_s: 30.0
+  # 单轮策略子进程超时：超时 SIGTERM -> stop-grace -> SIGKILL，实例 exit 1。
+  round_timeout_s: 600.0
+  # 空闲/轮间 hold 心跳频率（实例契约 2-5 Hz；4 Hz 留足 arm_app 5s 租约余量）。
+  hold_hz: 4.0
+  # <ns>/inference/stopped 电平发布频率（契约 2 Hz）。
+  stopped_hz: 2.0
+
+ros2:
+  # 机械臂话题前缀（与 arm_app 一致；机械臂话题不走 INFERENCE_NAMESPACE）。
+  prefix: /arm
+  # 冻结六关节顺序（最后一位是夹爪；hold 命令按该顺序发布实测位置）。
+  joint_names:
+    - shoulder_pan
+    - shoulder_lift
+    - elbow_flex
+    - wrist_flex
+    - wrist_roll
+    - gripper
+
+policy:
+  backend: finetune
+  # DVC 权重目录（相对仓库根；dvc pull 后存在）。路径不含 pretrained_model/ 子层。
+  checkpoint: models/act-20261117-act-wrist-smoke
+  # 平台执行总开关（仍须 CLI 双门）；缺省 false 更安全，本真机配置显式 true。
+  allow_platform_execution: true
+  # 单轮最大执行时长（finetune deploy 命令 --max-duration-s 强制执行）。
+  max_duration_s: 60.0
+  finetune:
+    # 复用 finetune 仓稳定命令面（deploy/run.sh execute），不在本仓库 import torch/lerobot。
+    repo: /home/ubuntu/yayyrobotics/finetune
+    deploy_script: deploy/run.sh
+    runtime_config: configs/runtime_execute.yaml
+    # 执行用 Python（finetune venv）；环境变量未设置时用该机器默认路径。
+    venv_python: "${SO101_VENV_PYTHON:-/home/ubuntu/discover/so101/.venv/bin/python}"
+    device: cuda
+    # 显式 pin finetune 仓 HEAD（preflight 只读校验；发布时策略组件版本可追溯）。
+    # 取法：git -C /home/ubuntu/yayyrobotics/finetune rev-parse HEAD
+    commit: 7f6da5c8db11938945b08a03997116912ebd20ba
+  mock:
+    # --dry-run 或 backend=mock 时使用的确定性离线 chunk 参数（本配置真机默认不触发）。
+    steps: 30
+    chunk_size: 5
+    step_delay_s: 0.0
+    seed: 0

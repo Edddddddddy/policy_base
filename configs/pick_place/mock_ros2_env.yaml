@@ -1,0 +1,46 @@
+# SO-101 policy_base mock/离线实例配置 —— **仅离线测试，禁止真机**。
+#
+# 用途：无 ROS 2 / 无 GPU / 无 checkpoint 时验证实例协议与策略轮次接线：
+#   python -m policy_base.instance.entry --config configs/pick_place/mock_ros2_env.yaml --dry-run
+#   （--dry-run 会强制 mock 后端；即使忘了加，本文件 backend: mock 也只会跑离线 mock 子进程）
+#   python -m policy_base.policy.mock --report /tmp/report.json   # 单独验证 mock 轮次
+#
+# 安全语义（不可放宽）：
+#   * policy.allow_platform_execution: false —— 即使有人误加 --enable-motion/--confirm-real，
+#     本配置的 finetune 路径也永远不可用（backend=mock 时根本不会构建真机命令）；
+#   * mock 后端不 import rclpy/torch、不连接 ROS/串口/推理服务，只做确定性模拟发布；
+#   * 本文件**不得**用于真机/平台生产；真机配置见 configs/pick_place/live_ros2_env.yaml。
+
+schema: so101.policy_base.instance_config.v1
+
+instance:
+  namespace_env: INFERENCE_NAMESPACE
+  warmup_timeout_s: 30.0
+  round_timeout_s: 600.0
+  # 实例协议 hold 心跳频率（2-5 Hz；无 joint_states 样本时自动跳过该周期）。
+  hold_hz: 4.0
+  # <ns>/inference/stopped 电平发布频率（契约 2 Hz）。
+  stopped_hz: 2.0
+
+ros2:
+  # mock/回环环境同样使用 /arm 前缀（与真机契约一致，便于同一套协议测试）。
+  prefix: /arm
+  joint_names:
+    - shoulder_pan
+    - shoulder_lift
+    - elbow_flex
+    - wrist_flex
+    - wrist_roll
+    - gripper
+
+policy:
+  backend: mock
+  # 离线安全默认：平台执行总开关关闭，任何真机路径都不可达。
+  allow_platform_execution: false
+  max_duration_s: 60.0
+  mock:
+    # 确定性 mock chunk 推理参数：published=steps>0，退出码 0。
+    steps: 30
+    chunk_size: 5
+    step_delay_s: 0.0
+    seed: 0

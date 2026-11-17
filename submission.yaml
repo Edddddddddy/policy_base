@@ -1,0 +1,33 @@
+# SO-101 policy_base 算法交付声明（submission.yaml）
+#
+# 契约：inference_manager 读取固定 commit 仓库根目录的本文件做预检/准备；字段严格（未知字段拒绝）。
+#   - policy.model: policy-based —— 模型策略；IM 在仓库根执行 `dvc pull` 拉取权重
+#     （.dvc 指针入库，权重不入 git；remote=MinIO s3://so101-archive/dvc/policy_base）；
+#   - targets.station_types: 本期仅 pick_place（launch.station_type 必须精确匹配）；
+#   - resources: policy-based 必填（GPU 推理）；每卡显存按 checkpoint 规模申报；
+#   - runtime.kind: uv（仓库根必须有 uv.lock；IM 在实例 workspace 执行 `uv sync --locked --no-dev`
+#     后以 `uv run --no-sync` 启动 argv）。
+#
+# 实例入口（argv）：env 位置订阅模式，实例只做控制面协议 + 每轮拉起策略子进程；
+#   - 真机运动还须实例 CLI 显式 --enable-motion --confirm-real（双门不可绕过），且
+#     实例配置 policy.allow_platform_execution: true；EP/FM 一次性授权由平台上下文提供。
+#   - 租约（lease）由 factory_manager 持有，实例绝不 acquire/release。
+#   - mock/离线：`python -m policy_base.instance.entry --config configs/pick_place/mock_ros2_env.yaml --dry-run`
+#     （--dry-run 强制 mock 后端，仅测试用，禁止真机）。
+policy:
+  model: policy-based
+targets:
+  station_types: [pick_place]
+resources:
+  gpu_count: 1
+  gpu_memory_mib_per_gpu: 8192
+runtime:
+  kind: uv
+  uv:
+    python_version: "3.12"
+    argv:
+      - python
+      - -m
+      - policy_base.instance.entry
+      - --config
+      - configs/pick_place/live_ros2_env.yaml
