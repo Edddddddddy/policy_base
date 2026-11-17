@@ -8,6 +8,10 @@
 > 完整 prepare 保留 `.git` 后在仓库根执行既有 `dvc pull`，`provenance.weights_source=manager_dvc`。
 > **IM 生产代码无需改动**；本轮只新增 IM 示例配置、离线集成测试与文档（见 §5）。
 > 路线 B（IM `repo_source: local` 只读复制后 dvc pull）实测被否决：副本不含 `.git`，DVC 直接拒绝。
+>
+> **官方固定 commit `8d5186fe3594705f23746a3db07226900f00a3af` 已全链路复核通过**（2026-11-17，
+> `file:///home/ubuntu/yayyrobotics/policy_base` + 真实 MinIO `dvc pull`，见 §2.6/§4.3）；
+> 该 hash 之后**只允许文档类提交**（代码/配置/权重指针变更须重新复核）。
 
 `submission.yaml` 声明 `policy.model: policy-based` + `runtime.kind: uv`，因此 IM 必须拉取 DVC 权重；
 IM 既有生产路径本就支持该组合（`artifacts/preparer.py` → `artifacts/git.py` + `artifacts/dvc.py`），
@@ -161,7 +165,43 @@ workspace .git 存在；git HEAD == 合成固定 commit
 ```
 
 边界：repo_url 是 /tmp 临时克隆而非 `file:///home/ubuntu/yayyrobotics/policy_base`，commit 也不是官方 hash；
-因此**不能替代 §4.3 的官方复核**，只作为官方 commit 前的最强组件级证据（真实内容、真实 DVC 远端、真实 IM 流程）。
+因此不能替代官方复核。官方复核随后已完成（§2.6），本条保留为合成 commit 的可复现对照证据。
+
+### 2.6 官方固定 commit 全链路复核（commit 8d5186f，已完成）
+
+`evidence/09_official_chain.log`（复核时源仓库 `git status` 为 clean，只读访问）：
+
+```bash
+# 源仓库 HEAD / commit 核对
+git -C /home/ubuntu/yayyrobotics/policy_base rev-parse HEAD
+# 8d5186fe3594705f23746a3db07226900f00a3af
+git -C /home/ubuntu/yayyrobotics/policy_base ls-tree -r --name-only HEAD | grep -E '^(submission.yaml|uv.lock|.dvc/config|models/.*\.dvc)$'
+# .dvc/config, models/act-20261117-act-wrist-smoke.dvc, submission.yaml, uv.lock
+
+# IM 侧真实 preflight + prepare（ArtifactPreparer, repo_source=git, dvc_executable=/home/ubuntu/.local/bin/dvc,
+# command_timeout_s=900；workspace 在 /tmp，真实 MinIO dvc pull；脚本 /tmp/p3_im_spike/official_chain.py）
+env -u PYTHONPATH /home/ubuntu/yayyrobotics/inference_manager/.venv/bin/python \
+    /tmp/p3_im_spike/official_chain.py 8d5186fe3594705f23746a3db07226900f00a3af
+```
+
+```text
+repo_url: file:///home/ubuntu/yayyrobotics/policy_base
+commit:   8d5186fe3594705f23746a3db07226900f00a3af   （policy_base HEAD 一致，git status clean）
+preflight commit=8d5186fe… model=policy-based kind=uv requires_dvc=True elapsed=0.357s
+  预检工作树只有 [.git, submission.yaml]
+prepare elapsed=2.480s
+provenance weights_source=manager_dvc dvc_invoked=true
+  declarations: {models/act-20261117-act-wrist-smoke.dvc: f4e7f2fd69fad6…}
+workspace .git 存在；git HEAD == 8d5186fe…
+权重 7 文件 / 206,722,219 B（与 .dvc 指针 size/nfiles 一致）
+model.safetensors size=206,699,736 sha256=e145b7a3b9ca396e93c724a265d8d189e490b7e050405feecef1d8981f4dc844
+model 内容 == policy_base 源文件；manifest 从 materialized worktree 重新解析一致
+PASS；workspace 已清理，policy_base 源仓库未被写入（复核前后 git status 均为 clean）
+```
+
+结论：**路线 A 在官方 commit 上端到端成立**——IM 按固定 commit 拉取、保留 `.git`、真实 MinIO `dvc pull`
+还原 198 MB 权重，`weights_source=manager_dvc`。复核对象锁定为 commit `8d5186f`；该 hash 之后只允许
+文档类提交，任何代码/配置/`.dvc` 指针变更都必须重新跑本节复核并更新记录。
 
 ## 3. IM 配置样例
 
@@ -250,26 +290,34 @@ env -u PYTHONPATH .venv/bin/ruff check src tests examples scripts
 - **阶段 1.5（已完成，真实内容 + 合成 commit）**：§2.5，IM `ArtifactPreparer` 全链路
   preflight 0.327 s + prepare 3.100 s（含真实 MinIO `dvc pull` 198 MB），`weights_source=manager_dvc`、
   `.git` 保留、HEAD==合成固定 commit、权重 sha256 与源一致。
-- **阶段 2（待补，需官方固定 commit）**：对 `file:///home/ubuntu/yayyrobotics/policy_base` + 含 P3 交付内容的
-  官方 40 位 commit 跑真实 preflight+prepare，记录耗时、`weights_source`、权重目录大小/sha。复核完成前，
-  「IM 已实际拉起 policy_base」只能算**组件级就绪**，不得写成实机/端到端验收。
+- **阶段 2（已完成，官方固定 commit）**：§2.6，对 `file:///home/ubuntu/yayyrobotics/policy_base` +
+  commit `8d5186fe3594705f23746a3db07226900f00a3af` 跑真实 preflight+prepare：preflight 0.357 s、
+  prepare 2.480 s（含真实 MinIO `dvc pull` 198 MB），`weights_source=manager_dvc`、`.git` 保留、
+  HEAD==commit、权重 7 文件 / 206,722,219 B、`model.safetensors` sha256 `e145b7a3…`。
+  结论：「IM Git 源 + DVC 拉起 policy_base 的准备阶段」组件级验收通过；**IM 实例进程启动与实机/平台接线
+  仍属未验证**（见 §6），不得写成端到端实机验收。
 
-### 4.3 官方固定 commit 全链路复核记录（待补）
+### 4.3 官方固定 commit 全链路复核记录（已完成）
 
-> 状态：**未完成**。等 Lead 把 `submission.yaml`、`.dvc/`、`models/*.dvc`、`uv.lock` 提交为官方固定 hash 后补录
-> （§2.5 的真实内容 + 合成 commit 全链路已先行通过，但不能替代本项）。
-> 复核用临时 workspace（`/tmp`），只读访问本仓库；命令示例：
+> 状态：**已完成（2026-11-17）**，验证 commit = `8d5186fe3594705f23746a3db07226900f00a3af`，
+> 命令/输出见 §2.6，证据 `/tmp/p3_im_spike/evidence/09_official_chain.log`。
+> 复核基线：该 hash 之后**只允许文档类提交**（如补录本节）；代码、配置或 `.dvc` 指针若有变更，
+> 必须重跑官方全链路并把新 hash 与结果追加到本节，不得沿用旧结论。
+
+复核入口（可复现）：
 
 ```bash
-cd /home/ubuntu/yayyrobotics/inference_manager
-env -u PYTHONPATH .venv/bin/python - <<'PY'
-# 用 configs/manager.local.git.example.yaml 派生临时配置，ArtifactPreparer.preflight + prepare
-# repo_url=file:///home/ubuntu/yayyrobotics/policy_base, commit_hash=<固定 hash>
-PY
-# 期望：preflight.commit == 请求 commit；weights_source=manager_dvc；
-#       workspace/source/models/act-20261117-act-wrist-smoke/model.safetensors sha256=e145b7a3…
-#       workspace/source/.git 存在；准备总耗时记录在案
+cd /tmp/p3_im_spike
+env -u PYTHONPATH /home/ubuntu/yayyrobotics/inference_manager/.venv/bin/python \
+    official_chain.py 8d5186fe3594705f23746a3db07226900f00a3af
+# 期望：preflight.commit == 请求 commit；weights_source=manager_dvc；dvc_invoked=true；
+#       workspace/source/.git 存在；git HEAD == commit；
+#       权重 7 文件 / 206,722,219 B；model.safetensors sha256=e145b7a3…
+#       准备耗时：preflight 0.357 s + prepare 2.480 s
 ```
+
+注意：脚本依赖 `/tmp/p3_im_spike/real_clone_chain.py` 同目录的临时配置派生方式，若 /tmp 已清理，
+按 `inference_manager/configs/manager.local.git.example.yaml` 重建等价配置即可（见 §3）。
 
 ## 5. 回滚
 
@@ -286,7 +334,8 @@ PY
 
 ## 6. 未验证项 / 风险
 
-- **固定 commit 全链路**（§4.3）：未完成；当前只有合成仓库的端到端证据与真实工作区的 DVC 就绪性证据。
+- **固定 commit 全链路**（§4.3）：官方 commit `8d5186f` 已复核通过（§2.6）；但该 hash 之后的代码/配置/
+  `.dvc` 指针变更会使结论失效，只允许文档类提交。
 - **IM 实例启动**：本轮只验证到 `ArtifactPreparer.prepare`（Git+DVC）；workspace 内 `uv sync --locked`
   （`UvRuntime.prepare`）、进程拉起、`ready`/`stopped` 与回收未在本轮真实执行（需 ROS 2 Jazzy 覆盖层、
   GPU/推理依赖与实例配置就绪）。
@@ -307,5 +356,5 @@ PY
 - `inference_manager/tests/test_policy_base_git_source.py`：新增（离线 git 源 + DVC 集成测试，5 用例）。
 - `inference_manager/docs/local-mode.md`：追加「git 源 + DVC（policy_base）」小节（配置差异/切换/回滚/限制）。
 - `inference_manager/CHANGELOG.md`：未发布条目补充新增/变更/验证。
-- 本文件：新增。
+- 本文件：新增；官方 commit `8d5186f` 之后追加 §2.6/§4.3 复核记录（纯文档提交）。
 - **未改 `inference_manager/src/**`**：证明既有生产代码无需改动即可支持本路线（仅新增测试/示例/文档）。
