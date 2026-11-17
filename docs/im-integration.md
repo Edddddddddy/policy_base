@@ -328,8 +328,10 @@ env -u PYTHONPATH /home/ubuntu/yayyrobotics/inference_manager/.venv/bin/python \
    `env -u PYTHONPATH .venv/bin/python -m pytest -q tests/test_local_repo.py` 通过即视为回滚成功。
 3. **回滚后的 policy-based 行为**：IM 会明确拒绝 policy-based（`LOCAL_POLICY_DVC_ERROR`），
    不会静默跳过权重——这是预期安全行为；需要拉起 policy_base 时必须重新切回 git 源。
-4. **平台 pin**：FM 仍 pin rule_base `6401700f98e61664686fa422893f928a8258af6c`；切到 policy_base 需
-   用户确认，不在本轮范围。
+4. **平台接线（P3-5，准备完成 / 待 Lead 执行）**：见 §8。FM 配置 pin 保持 rule_base
+   `6401700f98e61664686fa422893f928a8258af6c` 作为回退；policy_base 任务由 EP 携带任务级 pin，
+   FM `inference.allow_task_overrides: true` 时消费。回滚 = EP 模板 `--delete` + A1 删除 alias +
+   IM 恢复备份 + FM 关闭开关，顺序见 §8.7。
 5. 清理：临时 workspace 由 IM 回收流程删除；`/tmp/p3_im_spike` 为本轮证据目录，可整体删除后按脚本复现。
 
 ## 6. 未验证项 / 风险
@@ -339,8 +341,8 @@ env -u PYTHONPATH /home/ubuntu/yayyrobotics/inference_manager/.venv/bin/python \
 - **IM 实例启动**：本轮只验证到 `ArtifactPreparer.prepare`（Git+DVC）；workspace 内 `uv sync --locked`
   （`UvRuntime.prepare`）、进程拉起、`ready`/`stopped` 与回收未在本轮真实执行（需 ROS 2 Jazzy 覆盖层、
   GPU/推理依赖与实例配置就绪）。
-- **实机/平台接线**：domain 0 真机、FM/EP/A1 接线、EP 模板与 FM pin 未做；本仓库 `configs/pick_place/*`
-  与本文件不改变平台控制面语义。
+- **实机/平台接线（P3-5 已准备，未执行）**：接线方案与状态见 §8。截至本文件更新，EP 模板未写库、
+  A1 real alias 未加、IM 服务未重启、真机未验证；本仓库 `configs/pick_place/*` 不改变平台控制面语义。
 - **GPU 配额**：示例 `gpus: [{id: "0", memory_mib: 8192}]` 是声明式配额（IM 不探测硬件），真机须按实际
   GPU 显存与并发数调整；本轮未在真实 GPU 上拉起实例。
 - **认证**：本轮真实复核用本机 `file://` 源，不需要 Git 凭据；HTTPS/SSH Git 源与 Token/SSH 用户绑定
@@ -358,3 +360,124 @@ env -u PYTHONPATH /home/ubuntu/yayyrobotics/inference_manager/.venv/bin/python \
 - `inference_manager/CHANGELOG.md`：未发布条目补充新增/变更/验证。
 - 本文件：新增；官方 commit `8d5186f` 之后追加 §2.6/§4.3 复核记录（纯文档提交）。
 - **未改 `inference_manager/src/**`**：证明既有生产代码无需改动即可支持本路线（仅新增测试/示例/文档）。
+
+## 8 平台接线（P3-5：EP / A1 / FM / IM 四段）
+
+> 状态：**接线方案已交付；服务重启/EP 写库/真机验证由 Lead 在提交后执行**。执行后不再回写本文件
+> （避免产生新提交使 A1 alias / EP 模板的 commit pin 失配）；实际执行结果以
+> `factory_manager/local/integration/real/README.md` §10 与 P3-5 交付报告为准。
+>
+> 接线基线 commit：`0356a0d173e6c37106da0b5b8a7775cac3f47633`（`8d5186f` 之后的文档提交，§2.6
+> 官方复核结论继续有效）。**本 §8 所在提交即接线最终提交**：Lead 提交后将 A1 alias key 与 EP 模板
+> commit 写成该 HEAD（运行时配置/EP 库，不在本文件自引用 hash），三处必须指向同一提交，否则平台链
+> 失配（A1 `COMMIT_MISMATCH` 或 `no inference repo alias`）。
+
+目标（用户已确认）：EP 可同时下发 **rule_base 采集/评测任务** 与 **policy_base 策略执行任务**；
+FM 按任务携带的 repo/commit 选择推理仓库（任务级 pin），配置 pin 只作回退。
+
+### 8.1 链路与职责
+
+```text
+EP 保存模板（预填 repo_url/commit）
+  └─ 提交任务：task.payload.inference.template = {repo_url, commit}   （evaluation/services.py）
+MP（消息总线）→ A1 platform_agent
+  └─ inference.repo_aliases[(repo_url, commit)] → 本机只读目录；校验 git HEAD == commit（不 checkout）
+FM task_control（A1 下发 inference_repo_url/inference_commit）
+  └─ inference.allow_task_overrides=true 时作为任务级 pin 传给 IM launch；false 用配置 pin（回退）
+IM（实例拉起器）
+  └─ repo_source: git → 按固定 commit partial fetch/sparse 预检 → materialize（保留 .git）
+     → dvc pull（MinIO）→ uv sync → 拉起实例
+实例（policy_base.instance.entry；本仓库）
+```
+
+关键约定：
+
+- EP 模板的 `repo_url` 用**公开远端 URL**（`https://github.com/Edddddddddy/policy_base.git`），
+  但 EP 不访问远端；A1 alias 负责映射到本机目录，A1 只校验本地 HEAD。
+- A1 下发的是**本地目录**（`/home/ubuntu/yayyrobotics/policy_base`），IM 契约接受本地绝对路径
+  （`inference_manager/contracts.py::validate_repo_url`），git fetch 从本地目录读取同一 commit。
+- FM 的 `inference.repo_url/commit_hash` 保留 rule_base `6401700f…` 作为**回退 pin**（本任务不改）。
+
+### 8.2 IM git 源（接线唯一运行时配置改动）
+
+运行时文件 `/tmp/s5_real/im.real.yaml`（真机 Gate 配置，不入仓）：
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `runtime.repo_source` | `local` | `git` |
+| `runtime.local_repo_root` | `/home/ubuntu/yayyrobotics` | 删除（git 模式拒绝该字段） |
+| `runtime.execution.dvc_executable` | 未配置 | `/home/ubuntu/.local/bin/dvc`（绝对路径；env.sh 会摘 `~/.local/bin`） |
+| `preserve_pythonpath` / `command_timeout_s` | `true` / `900.0` | 不变 |
+
+- 备份：`/tmp/p3_5_backup_20261118-002321/im.real.yaml`；回滚 = 恢复该备份后重启 IM。
+  完整 diff 与验证记录见 `.scratch/session-15-platform-diag/p3-wiring/im-reconfig.md`。
+- 离线解析验证（已通过）：`load_manager_config` 输出
+  `git None /home/ubuntu/.local/share/uv/tools/dvc/bin/dvc True`。
+- IM 侧证据：§2.6 官方固定 commit 全链路（git 源 + 真实 MinIO `dvc pull` 198 MB）已通过；
+  服务重启后的实例 prepare/拉起待 Lead 验证。
+- GPU 配额（接线时已补）：本仓 `submission.yaml` 申报 1 GPU / 8192 MiB；`/tmp/s5_real/im.real.yaml`
+  节点已声明 `gpus: [{id: "0", memory_mib: 8192}]`（声明式配额，IM 不探测硬件）。离线用 IM
+  `choose_lease` 验证 policy-based（1×8192）与 rule-based（0 GPU）均可租到（2026-11-18）。rule_base 不受影响。
+
+### 8.3 A1 alias
+
+- 仓库 mock 配置 `factory_manager/local/config/platform_agent.yaml`（已加，P3-5）：
+  `"https://github.com/Edddddddddy/policy_base.git": {<FINAL>: /home/ubuntu/yayyrobotics/policy_base}`；
+  `<FINAL>` 在提交后由 Lead 回填（本文件所在提交）。
+- 真机运行时配置 `/tmp/platform_real_acceptance/a1_real_9432156.yaml`（/tmp 不入仓）：由 Lead 追加同一
+  alias（commit=最终 HEAD）后重启 A1。
+- A1 校验（`platform_agent/selfcheck.py::_check_inference_aliases` + `tasks.py::_resolve_inference`）：
+  目录存在、`git rev-parse HEAD == commit`；不一致分别报 `INFERENCE_ALIAS_HEAD` / `COMMIT_MISMATCH`。
+- 自检命令（只读）：`bash factory_manager/local/platform-agent --config <配置> [--confirm-real] --selfcheck`。
+  P3-5 前 mock 配置即有 3 条 rule_base 旧 alias FAIL（与 policy_base alias 无关）。
+
+### 8.4 EP 模板
+
+- 脚本（可重复执行、幂等）：`.scratch/session-15-platform-diag/p3-wiring/ep-template.py`；
+  按 `(station, name)` `get_or_create`/update，字段形状读取现有模板 id=1；`--dry-run` 只读预览；
+  `--delete` 回滚；commit 强制 40/64 位 hex。
+- 待创建：`name=policy_base · ACT · 1 轮`、`repo_url=https://github.com/Edddddddddy/policy_base.git`、
+  `commit=<最终 HEAD>`、`task_type=evaluation`、`total_round=1`、`params={}`、
+  `action/record_policy/record_upload_endpoint` 继承现有模板、`created_by=None`。
+- 状态：dry-run 已通过（工站 pk=1、无同名模板、would=create），**未写库**（EP 库当前只有 1 条 rule_base 模板）。
+  写库命令与验证/回滚见 `factory_manager/local/integration/real/README.md` §10.3。
+
+### 8.5 FM 任务级 pin（W-1，fm-dev 交付）
+
+- `inference.allow_task_overrides`（bool，默认 **false** = 配置权威、旧行为零变化）：
+  - `false`：忽略任务级 `inference_repo_url/inference_commit`，沿用配置 pin（保持既有 WARNING）。
+  - `true`：任务级值在 `INFERENCE_LAUNCH` 生效；**两者都空→回退配置**；**成对→任务级优先**
+    （commit 40/64 hex、小写归一；repo 非空）；**半覆盖/非法→该阶段失败，不回退配置 pin**。
+  - `inference_station_type` 仍不覆盖插件（冻结签名）；对本链路无影响（A1 按自身 station.type 下发）。
+- `factory_manager/local/config/platform_real.yaml` 已置 `true`（回滚 = 改 false；需重启 FM）。
+- 验收：`cd factory_manager/local && python3 -m pytest tests/unit -q`（fm-dev 新增纯逻辑用例覆盖上述语义）。
+
+### 8.6 执行顺序（Lead，全部先备份）
+
+1. policy_base 最终提交（含 §8 本段）→ 记录最终 HEAD（记为 `<FINAL>`）。
+2. A1：仓库 mock alias + real `/tmp` 配置 alias 的 commit 均改为 `<FINAL>`。
+3. EP：`ep-template.py --commit <FINAL>` 写模板（先 `--dry-run` 复核）。
+4. IM：`/tmp/s5_real/im.real.yaml` 已是 git 源（本任务改好）；若需 GPU 配额按 §8.2 补。
+5. 重启顺序：**FM（新代码 + allow_task_overrides=true）→ IM（新配置）→ A1（新 alias）**；
+   EP/MP 无代码变更不重启（EP 模板是 DB 行，写库即生效）。前置：EP 无在途任务、工站 IDLE、用户在场。
+6. 验证：三方 pin 一致（policy_base HEAD == A1 alias key == EP 模板 commit）、A1 selfcheck 无 alias 错误、
+   IM 配置解析/ready 正常、FM 单测全绿、EP 模板可见；真机 E2E 留硬件窗口。
+7. 详细命令与验证清单见 `factory_manager/local/integration/real/README.md` §10.6。
+
+### 8.7 回滚
+
+1. EP 模板：`ep-template.py --delete`（先 `--dry-run`）。
+2. A1：删除 policy_base alias（real `/tmp` 配置 + 仓库 mock 配置）→ 重启 A1。
+3. IM：恢复 `/tmp/p3_5_backup_20261118-002321/im.real.yaml` → 重启 IM（恢复 local；policy-based 将明确
+   `LOCAL_POLICY_DVC_ERROR`，预期安全行为）。
+4. FM：`allow_task_overrides: false`（或删行）→ 重启 FM；配置 pin 自动回落 rule_base `6401700…`（未改动）。
+5. 顺序：先停策略任务下发，再按 **FM → IM → A1** 重启；最后确认工站 IDLE、A1 selfcheck 干净。
+
+### 8.8 未验证项（如实记录）
+
+- **真机动作**：arm 硬件 deactivate（P0 未解）→ policy_base 单轮动作、ACT 推理成功率、安全门实机行为
+  **均未验证**；本轮证据上限为“任务可路由 + 实例可准备”的组件级。
+- **A1→FM 任务级路由端到端**：由 FM 单测覆盖语义，真实重启窗口内需用一条任务验证。
+- **IM 实例拉起**：§6 的 `uv sync`/进程拉起/ready 回收仍未在本轮真实执行；重启后由 Lead 验证。
+- **repo_source 全局开关**：rule_base 也走 git fetch，接线后需回归一次 rule_base 任务。
+- **提交冻结**：`<FINAL>` 之后 policy_base 不得再产生新提交，否则 alias/模板/本节 commit 全部失配。
